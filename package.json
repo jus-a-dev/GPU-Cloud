@@ -1,0 +1,11 @@
+{
+  "name": "gpu-cloud",
+  "private": true,
+  "workspaces": ["packages/*", "apps/*"],
+  "scripts": {
+    "dev:api": "npm -w apps/api run dev",
+    "dev:web": "npm -w apps/web run dev",
+    "build": "npm -w packages/shared run build && npm -w apps/web run build && npm -w apps/api run build",
+    "test": "npm -w apps/api test"
+  }
+}

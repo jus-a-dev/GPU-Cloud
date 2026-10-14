@@ -1,0 +1,13 @@
+services:
+  gpu-cloud:
+    build: .
+    ports:
+      - "${BIND:-127.0.0.1}:${PORT:-8080}:8080"
+    environment:
+      NAMESPACE: ${NAMESPACE:-gpu-cloud}
+      NODE_HOST: ${NODE_HOST:?set NODE_HOST in .env}
+      KUBECONFIG: /kube/config
+      RUNTIME_CLASS: ${RUNTIME_CLASS-nvidia}
+    volumes:
+      - ${KUBECONFIG_PATH:-~/.kube/config}:/kube/config:ro
+    restart: unless-stopped

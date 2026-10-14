@@ -1,0 +1,8 @@
+export const NAMESPACE = process.env.NAMESPACE ?? "gpu-cloud";
+export const NODE_HOST = process.env.NODE_HOST ?? "localhost";
+export const PORT = Number(process.env.PORT ?? 8080);
+export const LABEL = "gpucloud.io/managed";
+export const NAME_LABEL = "gpucloud.io/name";
+export const CONFIG_ANNOTATION = "gpucloud.io/config";
+// Set to "" to disable. Needed on k3s, where nvidia is not the default runtime.
+export const RUNTIME_CLASS = process.env.RUNTIME_CLASS ?? "nvidia";
