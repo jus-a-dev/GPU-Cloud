@@ -29,17 +29,19 @@ export async function createNotebook(input: unknown): Promise<NotebookInfo> {
 
 export async function getNotebook(name: string): Promise<NotebookInfo> {
   const pod = await core.readNamespacedPod({ name: podName(name), namespace: NAMESPACE });
-  const svc = await core.readNamespacedService({ name: podName(name), namespace: NAMESPACE });
-  const sec = await core.readNamespacedSecret({ name: secretName(name), namespace: NAMESPACE });
-  const token = Buffer.from(sec.data?.token ?? "", "base64").toString();
-  const nodePort = svc.spec?.ports?.[0]?.nodePort;
+  // The Service/Secret can be gone while the pod is still terminating (e.g. removed by the cleanup CronJob).
+  const optional = <T>(p: Promise<T>) => p.catch((e: any) => { if (e?.code === 404) return undefined; throw e; });
+  const svc = await optional(core.readNamespacedService({ name: podName(name), namespace: NAMESPACE }));
+  const sec = await optional(core.readNamespacedSecret({ name: secretName(name), namespace: NAMESPACE }));
+  const token = Buffer.from(sec?.data?.token ?? "", "base64").toString();
+  const nodePort = svc?.spec?.ports?.[0]?.nodePort;
   const { phase, message } = podStatus(pod);
   return {
     name,
     config: JSON.parse(pod.metadata?.annotations?.[CONFIG_ANNOTATION] ?? "{}"),
     phase,
     message,
-    url: nodePort && phase === "Running" ? notebookUrl(name, nodePort, token) : undefined,
+    url: nodePort && sec && phase === "Running" && !pod.metadata?.deletionTimestamp ? notebookUrl(name, nodePort, token) : undefined,
     createdAt: pod.metadata?.creationTimestamp?.toISOString(),
   };
 }
@@ -47,7 +49,8 @@ export async function getNotebook(name: string): Promise<NotebookInfo> {
 export async function listNotebooks(): Promise<NotebookInfo[]> {
   const pods = await core.listNamespacedPod({ namespace: NAMESPACE, labelSelector: selector });
   const names = pods.items.map((p) => p.metadata?.labels?.[NAME_LABEL]).filter((n): n is string => !!n);
-  return Promise.all(names.map(getNotebook));
+  const found = await Promise.all(names.map((n) => getNotebook(n).catch((e: any) => { if (e?.code === 404) return undefined; throw e; })));
+  return found.filter((n): n is NotebookInfo => !!n);
 }
 
 export async function deleteNotebook(name: string, purge = false): Promise<void> {
