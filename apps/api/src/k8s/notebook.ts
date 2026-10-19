@@ -1,6 +1,7 @@
 import type { V1PersistentVolumeClaim, V1Pod, V1Secret, V1Service } from "@kubernetes/client-node";
 import type { NotebookConfig } from "@gpu-cloud/shared";
-import { CONFIG_ANNOTATION, LABEL, NAME_LABEL, NAMESPACE, RUNTIME_CLASS } from "../config.js";
+import { CONFIG_ANNOTATION, LABEL, NAME_LABEL, NAMESPACE, PUBLIC_URL, RUNTIME_CLASS } from "../config.js";
+import { notebookBasePath } from "../url.js";
 
 const labels = (name: string) => ({ [LABEL]: "true", [NAME_LABEL]: name });
 export const podName = (n: string) => `nb-${n}`;
@@ -24,7 +25,8 @@ export function buildPvc(cfg: NotebookConfig): V1PersistentVolumeClaim {
   };
 }
 
-export function buildPod(cfg: NotebookConfig): V1Pod {
+// nodeName pins the pod to a node (used to follow a node-local PVC).
+export function buildPod(cfg: NotebookConfig, nodeName?: string): V1Pod {
   return {
     metadata: {
       name: podName(cfg.name),
@@ -34,13 +36,18 @@ export function buildPod(cfg: NotebookConfig): V1Pod {
     },
     spec: {
       restartPolicy: "Always",
+      ...(nodeName ? { nodeSelector: { "kubernetes.io/hostname": nodeName } } : {}),
       ...(RUNTIME_CLASS ? { runtimeClassName: RUNTIME_CLASS } : {}),
       containers: [
         {
           name: "jupyter",
           image: cfg.image,
           command: ["start-notebook.py"],
-          args: ["--IdentityProvider.token=$(JUPYTER_TOKEN)", "--ServerApp.ip=0.0.0.0"],
+          args: [
+            "--IdentityProvider.token=$(JUPYTER_TOKEN)",
+            "--ServerApp.ip=0.0.0.0",
+            ...(PUBLIC_URL ? [`--ServerApp.base_url=${notebookBasePath(cfg.name)}`] : []),
+          ],
           env: [
             {
               name: "JUPYTER_TOKEN",

@@ -10,6 +10,11 @@ export async function ensureNamespace(): Promise<void> {
   try {
     await core.readNamespace({ name: NAMESPACE });
   } catch {
-    await core.createNamespace({ body: { metadata: { name: NAMESPACE } } });
+    try {
+      await core.createNamespace({ body: { metadata: { name: NAMESPACE } } });
+    } catch (e: any) {
+      // In-cluster RBAC only grants `get`; the namespace comes from deploy/.
+      if (e?.code !== 403 && e?.code !== 409) throw e;
+    }
   }
 }

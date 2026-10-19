@@ -19,7 +19,10 @@ GPU slicing is done purely via HAMi resource limits on the container (`nvidia.co
 
 Notebook URL construction is isolated in `apps/api/src/url.ts` (`http://NODE_HOST:nodePort/lab?token=…`) so it can be swapped for ingress/reverse-proxy.
 
+When `PUBLIC_URL` is set, `apps/api/src/proxy.ts` reverse-proxies `/nb/<name>/*` (incl. WebSockets) to the notebook's in-cluster Service, notebook pods run Jupyter with `--ServerApp.base_url=/nb/<name>/`, and `notebookUrl` returns `PUBLIC_URL/nb/<name>/lab?token=…`. In-cluster deployment manifests are in `deploy/` (app uses its ServiceAccount; image is built by `.github/workflows/image.yml` and pulled from ghcr.io).
+
 ## Gotchas
+- A reused PVC (local-path) is node-bound; `createNotebook` reads its `volume.kubernetes.io/selected-node` annotation and pins the new pod to that node.
 - Target cluster is k3s, where `nvidia` is not the default container runtime. Notebook pods set `runtimeClassName` from `RUNTIME_CLASS` (default `nvidia`; set empty elsewhere). The HAMi `hami-device-plugin` DaemonSet needs the same (`devicePlugin.runtimeClassName=nvidia` in its Helm values); otherwise it crash-loops with "Incompatible strategy detected auto" and the node never gets `nvidia.com/gpu`, leaving pods Pending as "node unregistered".
 - The first notebook launch is slow: the default CUDA PyTorch image is multi-GB, so pods sit in `ContainerCreating` while it pulls.
 - `apps/web/src/api.ts` must only send `content-type: application/json` when there is a body; Fastify rejects body-less DELETEs that carry it with a 400.

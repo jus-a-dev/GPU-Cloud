@@ -1,0 +1,91 @@
+# Deploys GPU Cloud in-cluster. Apply with: kubectl apply -f deploy/gpu-cloud.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gpu-cloud
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gpu-cloud
+  namespace: gpu-cloud
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gpu-cloud
+  namespace: gpu-cloud
+rules:
+  - apiGroups: [""]
+    resources: [pods, services, secrets, persistentvolumeclaims]
+    verbs: [get, list, create, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gpu-cloud
+  namespace: gpu-cloud
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: gpu-cloud }
+subjects:
+  - { kind: ServiceAccount, name: gpu-cloud, namespace: gpu-cloud }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: gpu-cloud
+rules:
+  - apiGroups: [""]
+    resources: [nodes]
+    verbs: [list]
+  - apiGroups: [""]
+    resources: [namespaces]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: gpu-cloud
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: gpu-cloud }
+subjects:
+  - { kind: ServiceAccount, name: gpu-cloud, namespace: gpu-cloud }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gpu-cloud
+  namespace: gpu-cloud
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: gpu-cloud }
+  template:
+    metadata:
+      labels: { app: gpu-cloud }
+    spec:
+      serviceAccountName: gpu-cloud
+      containers:
+        - name: gpu-cloud
+          image: ghcr.io/jus-a-dev/gpu-cloud:latest # pin to a commit sha (built by .github/workflows/image.yml)
+          imagePullPolicy: IfNotPresent
+          env:
+            - { name: NAMESPACE, value: gpu-cloud }
+            - { name: RUNTIME_CLASS, value: nvidia }
+            - { name: PUBLIC_URL, value: "https://gpu.airis.org.in" }
+          ports:
+            - { containerPort: 8080, name: http }
+          readinessProbe:
+            httpGet: { path: /api/cluster, port: http }
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { memory: 512Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gpu-cloud
+  namespace: gpu-cloud
+spec:
+  selector: { app: gpu-cloud }
+  ports:
+    - { port: 8080, targetPort: http }

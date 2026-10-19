@@ -78,6 +78,7 @@ NODE_HOST=<node-ip> NAMESPACE=gpu-cloud PORT=8080 node apps/api/dist/server.js
 | `NAMESPACE` | `gpu-cloud` | Created on startup. |
 | `RUNTIME_CLASS` | `nvidia` | RuntimeClass for notebook pods. Set empty if `nvidia` is already the default runtime. |
 | `KUBECONFIG_PATH` | `~/.kube/config` | Host kubeconfig mounted read-only (Compose). |
+| `PUBLIC_URL` | empty | e.g. `https://gpu.airis.org.in`. When set, notebooks use `base_url=/nb/<name>/` and are reached through the app's proxy instead of NodePorts. |
 | `PORT` / `BIND` | `8080` / `127.0.0.1` | Listen port and interface (Compose). |
 
 Open the UI, pick a preset, and launch. The first launch is slow because the default image (`quay.io/jupyter/pytorch-notebook:cuda12-latest`) is several GB. Open the notebook from its **Open** link: `http://NODE_HOST:<nodePort>/lab?token=...`. NodePorts (30000-32767) must be reachable from the user's machine.
@@ -87,6 +88,17 @@ Open the UI, pick a preset, and launch. The first launch is slow because the def
 kubectl -n gpu-cloud get pod,svc
 kubectl -n gpu-cloud exec nb-<name> -- nvidia-smi    # memory.total equals the limit you chose
 ```
+
+## Deploy in-cluster (k3s, public via Cloudflare tunnel)
+Runs the app as a Deployment with its own ServiceAccount (no kubeconfig mount). Notebooks are served under `https://<host>/nb/<name>/` by the app's built-in reverse proxy (HTTP + WebSocket), so only the UI hostname needs to be exposed.
+```bash
+# CI (.github/workflows/image.yml) pushes ghcr.io/<owner>/gpu-cloud:<sha> on every push to main.
+# Make the package public (or add an imagePullSecret), pin the sha in deploy/gpu-cloud.yaml, then:
+kubectl apply -f deploy/gpu-cloud.yaml                          # edit PUBLIC_URL in it first
+# Cloudflare tunnel ingress already points gpu.airis.org.in at gpu-cloud-ui.cloudflared.svc:8080:
+kubectl -n cloudflared delete svc gpu-cloud-ui && kubectl apply -f deploy/cloudflared-service.yaml
+```
+Every GPU node must have the NVIDIA driver module for its running kernel, the NVIDIA Container Toolkit, the `gpu=on` label and a running `hami-device-plugin` pod; check with `kubectl get node -o custom-columns=N:.metadata.name,GPU:.status.allocatable.nvidia\\.com/gpu`. Notebooks created before `PUBLIC_URL` was set have no `base_url` and must be recreated. The proxy needs no auth either, so protect the hostname (e.g. Cloudflare Access).
 
 ## Troubleshooting
 | Symptom | Cause / fix |

@@ -1,0 +1,12 @@
+# The tunnel ingress for gpu.airis.org.in targets gpu-cloud-ui.cloudflared.svc:8080.
+# Point that name at the app. The existing placeholder is a ClusterIP Service and a Service's type can't
+# be changed by apply, so delete it first:
+#   kubectl -n cloudflared delete svc gpu-cloud-ui && kubectl apply -f deploy/cloudflared-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: gpu-cloud-ui
+  namespace: cloudflared
+spec:
+  type: ExternalName
+  externalName: gpu-cloud.gpu-cloud.svc.cluster.local

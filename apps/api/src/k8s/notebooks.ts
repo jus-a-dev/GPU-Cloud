@@ -12,14 +12,17 @@ export async function createNotebook(input: unknown): Promise<NotebookInfo> {
   const cfg = NotebookConfig.parse(input);
   const token = randomBytes(24).toString("hex");
   await core.createNamespacedSecret({ namespace: NAMESPACE, body: buildSecret(cfg, token) });
+  let nodeName: string | undefined;
   if (cfg.storageGiB > 0) {
     try {
       await core.createNamespacedPersistentVolumeClaim({ namespace: NAMESPACE, body: buildPvc(cfg) });
     } catch (e: any) {
-      if (e?.code !== 409) throw e; // reuse existing PVC
+      if (e?.code !== 409) throw e; // reuse existing PVC; local-path volumes are bound to one node
+      const pvc = await core.readNamespacedPersistentVolumeClaim({ name: pvcName(cfg.name), namespace: NAMESPACE });
+      nodeName = pvc.metadata?.annotations?.["volume.kubernetes.io/selected-node"];
     }
   }
-  await core.createNamespacedPod({ namespace: NAMESPACE, body: buildPod(cfg) });
+  await core.createNamespacedPod({ namespace: NAMESPACE, body: buildPod(cfg, nodeName) });
   await core.createNamespacedService({ namespace: NAMESPACE, body: buildService(cfg) });
   return getNotebook(cfg.name);
 }
@@ -36,7 +39,7 @@ export async function getNotebook(name: string): Promise<NotebookInfo> {
     config: JSON.parse(pod.metadata?.annotations?.[CONFIG_ANNOTATION] ?? "{}"),
     phase,
     message,
-    url: nodePort && phase === "Running" ? notebookUrl(nodePort, token) : undefined,
+    url: nodePort && phase === "Running" ? notebookUrl(name, nodePort, token) : undefined,
     createdAt: pod.metadata?.creationTimestamp?.toISOString(),
   };
 }

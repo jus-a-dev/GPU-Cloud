@@ -4,11 +4,13 @@ import { fileURLToPath } from "node:url";
 import fastify from "fastify";
 import fastifyStatic from "@fastify/static";
 import { ZodError } from "zod";
-import { PORT } from "./config.js";
+import { PORT, PUBLIC_URL } from "./config.js";
 import { ensureNamespace } from "./k8s/client.js";
+import { registerProxy } from "./proxy.js";
 import { clusterInfo, createNotebook, deleteNotebook, getNotebook, listNotebooks } from "./k8s/notebooks.js";
 
 const app = fastify({ logger: true });
+if (PUBLIC_URL) registerProxy(app);
 
 app.setErrorHandler((err: any, _req, reply) => {
   if (err instanceof ZodError) return reply.code(400).send({ error: err.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ") });
