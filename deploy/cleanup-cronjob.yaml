@@ -1,0 +1,118 @@
+# Daily cleanup of dead / unused notebooks. Apply with: kubectl apply -f deploy/cleanup-cronjob.yaml
+# Runs as the gpu-cloud ServiceAccount (its Role already allows get/list/delete on pods, services, secrets).
+#
+# A managed notebook (label gpucloud.io/managed=true) older than MIN_AGE_MINUTES is removed when it is
+#   - dead:     pod phase Failed/Succeeded, or stuck in ErrImagePull/ImagePullBackOff/CrashLoopBackOff/CreateContainerError,
+#               or unschedulable
+#   - unused:   Running but never opened (Jupyter last_activity == started, no kernels, no connections)
+# Removal deletes the pod, Service and token Secret. The PVC (user data) is kept.
+# Also deletes orphaned managed Services/Secrets that have no pod.
+# Test without deleting: kubectl -n gpu-cloud create job --from=cronjob/gpu-cloud-cleanup t1 (after setting DRY_RUN=true)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gpu-cloud-cleanup
+  namespace: gpu-cloud
+data:
+  cleanup.sh: |
+    #!/bin/sh
+    set -u
+    NS="${NAMESPACE:-gpu-cloud}"
+    MIN_AGE=$(( ${MIN_AGE_MINUTES:-360} * 60 ))
+    IDLE_SLACK="${IDLE_SLACK_SECONDS:-120}"
+    NOW=$(date +%s)
+
+    remove() { # name reason
+      echo "REMOVE nb $1: $2"
+      [ "${DRY_RUN:-false}" = "true" ] && return
+      kubectl -n "$NS" delete pod,svc,secret -l "gpucloud.io/managed=true,gpucloud.io/name=$1" --wait=false
+    }
+
+    # Prints "unused" if the notebook has never been opened, "used" or "unknown" otherwise.
+    jupyter_state() {
+      name="$1"
+      token=$(kubectl -n "$NS" get secret "nb-$name-token" -o jsonpath='{.data.token}' | base64 -d)
+      for base in "/nb/$name" ""; do
+        out=$(curl -sf -m 10 "http://nb-$name.$NS.svc:8888$base/api/status?token=$token") || continue
+        echo "$out" | jq -r --argjson slack "$IDLE_SLACK" '
+          def t: sub("\\.[0-9]+";"") | fromdateiso8601;
+          if .kernels == 0 and .connections == 0 and ((.last_activity|t) - (.started|t)) <= $slack
+          then "unused" else "used" end'
+        return
+      done
+      echo unknown
+    }
+
+    kubectl -n "$NS" get pods -l gpucloud.io/managed=true -o json | jq -c '.items[]' | while read -r pod; do
+      name=$(echo "$pod" | jq -r '.metadata.labels["gpucloud.io/name"]')
+      created=$(echo "$pod" | jq -r '.metadata.creationTimestamp | fromdateiso8601')
+      age=$(( NOW - created ))
+      if [ "$age" -lt "$MIN_AGE" ]; then echo "keep   nb $name: younger than ${MIN_AGE}s"; continue; fi
+
+      phase=$(echo "$pod" | jq -r '.status.phase')
+      waiting=$(echo "$pod" | jq -r '.status.containerStatuses[0].state.waiting.reason // ""')
+      unsched=$(echo "$pod" | jq -r '[.status.conditions[]? | select(.type=="PodScheduled" and .status=="False")] | length')
+
+      case "$phase" in Failed|Succeeded) remove "$name" "dead (phase $phase)"; continue;; esac
+      case "$waiting" in ErrImagePull|ImagePullBackOff|CrashLoopBackOff|CreateContainerError)
+        remove "$name" "dead ($waiting)"; continue;; esac
+      if [ "$unsched" -gt 0 ]; then remove "$name" "dead (unschedulable)"; continue; fi
+
+      if [ "$phase" = "Running" ]; then
+        case "$(jupyter_state "$name")" in
+          unused) remove "$name" "never opened";;
+          used)   echo "keep   nb $name: in use";;
+          *)      echo "keep   nb $name: jupyter status unreachable";;
+        esac
+      else
+        echo "keep   nb $name: phase $phase"
+      fi
+    done
+
+    # Orphaned Services/Secrets whose pod is gone.
+    pods=$(kubectl -n "$NS" get pods -l gpucloud.io/managed=true -o jsonpath='{range .items[*]}{.metadata.labels.gpucloud\.io/name}{"\n"}{end}')
+    for kind in svc secret; do
+      kubectl -n "$NS" get "$kind" -l gpucloud.io/managed=true -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.metadata.labels.gpucloud\.io/name}{"\n"}{end}' |
+      while read -r res name; do
+        [ -z "$res" ] && continue
+        echo "$pods" | grep -qx "$name" && continue
+        echo "REMOVE orphan $kind $res"
+        [ "${DRY_RUN:-false}" = "true" ] || kubectl -n "$NS" delete "$kind" "$res" --wait=false
+      done
+    done
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: gpu-cloud-cleanup
+  namespace: gpu-cloud
+spec:
+  schedule: "1 0 * * *" # 00:01 every day
+  timeZone: Asia/Kolkata
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      ttlSecondsAfterFinished: 604800
+      template:
+        spec:
+          serviceAccountName: gpu-cloud
+          restartPolicy: Never
+          containers:
+            - name: cleanup
+              image: alpine/k8s:1.34.1
+              command: ["/bin/sh", "/scripts/cleanup.sh"]
+              env:
+                - { name: NAMESPACE, value: gpu-cloud }
+                - { name: MIN_AGE_MINUTES, value: "360" }
+                - { name: DRY_RUN, value: "false" }
+              volumeMounts:
+                - { name: scripts, mountPath: /scripts }
+              resources:
+                requests: { cpu: 10m, memory: 32Mi }
+                limits: { memory: 128Mi }
+          volumes:
+            - name: scripts
+              configMap: { name: gpu-cloud-cleanup }
